@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/github/v/release/9trocode/OpenFing?style=flat-square" alt="Release">
 </p>
 
-**OpenFing** is a fast, lightweight network scanner written in Zig. It discovers devices on your local network and displays detailed information including IP addresses, MAC addresses, vendor/manufacturer info, and device types — similar to the popular Fing app, but open source and runs in your terminal.
+**OpenFing** is a fast, lightweight network scanner written in Zig. It discovers devices on your local network and displays detailed information, including IP addresses, MAC addresses, vendor/manufacturer info, and device types, similar to the popular Fing app, but open source and runs in your terminal.
 
 ## Why OpenFing?
 
