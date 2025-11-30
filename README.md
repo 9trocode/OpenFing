@@ -21,23 +21,23 @@ Fing's original free Command Line Interface (CLI) tool has become difficult or i
 
 **OpenFing offers an alternative:**
 
-- ✅ **Free and open source** — No subscriptions, no accounts, no data collection
-- ✅ **Privacy-first** — All scanning happens locally, nothing leaves your machine
-- ✅ **Simple CLI** — Does one thing well: scans your network and shows you what's connected
-- ✅ **Lightweight** — Single binary, no dependencies beyond optional `arp-scan`
+- **Free and open source** — No subscriptions, no accounts, no data collection
+- **Privacy-first** — All scanning happens locally, nothing leaves your machine
+- **Simple CLI** — Does one thing well: scans your network and shows you what's connected
+- **Lightweight** — Single binary, no dependencies beyond optional `arp-scan`
 
 For users who value privacy and simplicity, OpenFing brings back the straightforward network scanning experience that Fing used to provide.
 
 ## Features
 
-- 🚀 **Fast scanning** using ARP protocol
-- 🔍 **Device discovery** on local network
-- 🏭 **Vendor identification** from MAC address (OUI lookup)
-- 📱 **Device categorization** (Apple, Android, IoT, Computers, etc.)
-- 🔒 **Works without sudo** (limited mode using ARP cache)
-- 📦 **Auto-install dependencies** (detects your package manager)
-- 🖥️ **Cross-platform** (macOS and Linux)
-- ⚡ **Zero dependencies** (single binary)
+- **Fast scanning** using ARP protocol
+- **Device discovery** on local network
+- **Vendor identification** from MAC address (OUI lookup)
+- **Device categorization** (Apple, Android, IoT, Computers, etc.)
+- **Works without sudo** (limited mode using ARP cache)
+- **Auto-install dependencies** (detects your package manager)
+- **Cross-platform** (macOS and Linux)
+- **Zero dependencies** (single binary)
 
 ## Quick Start
 
@@ -109,7 +109,8 @@ sudo openfing wlan0    # Linux WiFi
 
 ```
 +==============================================================================+
-|                         NETWORK SCANNER (netscan)                            |
+|                              OpenFing v1.0.0                                 |
+|                    Fast Network Scanner for Your Terminal                    |
 +==============================================================================+
 
 Network Information:
@@ -123,7 +124,7 @@ Network Information:
 Scanning network for devices...
 
 +-----------------------------------------------------------------------------+
-| DISCOVERED DEVICES (via arp-scan (full scan))
+| DISCOVERED DEVICES (5 found via arp-scan (full scan))
 +-----------------------------------------------------------------------------+
 
 IP ADDRESS        | MAC ADDRESS        | VENDOR/HOSTNAME                    | STATUS
@@ -208,19 +209,19 @@ sudo apk add arp-scan
 
 ## Comparison: With vs Without sudo
 
-| Feature           | Without sudo         | With sudo          |
-| ----------------- | -------------------- | ------------------ |
-| Scan method       | ARP cache            | Full ARP scan      |
-| Device discovery  | Recent contacts only | All active devices |
-| Vendor lookup     | ✅                   | ✅ (more accurate) |
-| Speed             | Instant              | 2-5 seconds        |
-| Requires arp-scan | ❌                   | ✅ (auto-installs) |
+| Feature           | Without sudo         | With sudo           |
+| ----------------- | -------------------- | ------------------- |
+| Scan method       | ARP cache            | Full ARP scan       |
+| Device discovery  | Recent contacts only | All active devices  |
+| Vendor lookup     | Yes                  | Yes (more accurate) |
+| Speed             | Instant              | 2-5 seconds         |
+| Requires arp-scan | No                   | Yes (auto-installs) |
 
 ## Supported Platforms
 
-- ✅ macOS (Apple Silicon & Intel)
-- ✅ Linux (x86_64 & ARM64)
-- 🔜 Windows (planned)
+- macOS (Apple Silicon & Intel)
+- Linux (x86_64 & ARM64)
+- Windows (planned)
 
 ## Contributing
 
@@ -265,5 +266,5 @@ This tool is intended for network administrators and security professionals to a
 ---
 
 <p align="center">
-  Made with ❤️ and Zig
+  Made with Zig
 </p>
