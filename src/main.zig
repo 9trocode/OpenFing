@@ -1,9 +1,14 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const VERSION = "1.5.1";
+const VERSION = "1.6.0";
 const GITHUB_REPO = "9trocode/OpenFing";
 const GITHUB_API_URL = "https://api.github.com/repos/" ++ GITHUB_REPO ++ "/releases/latest";
+
+const MacInfo = struct {
+    mac: []const u8,
+    vendor: []const u8,
+};
 
 const Device = struct {
     ip: []const u8,
@@ -11,6 +16,9 @@ const Device = struct {
     vendor: []const u8,
     hostname: []const u8,
     open_ports: []const u8,
+    // Additional MACs for devices with multiple network interfaces
+    additional_macs: std.ArrayList(MacInfo),
+    has_additional_macs: bool,
 };
 
 const OsType = enum { macos, linux, unknown };
@@ -196,6 +204,9 @@ pub fn main() !void {
         return;
     }
 
+    // Merge duplicate IPs (same device with multiple network interfaces)
+    mergeDevicesByIP(allocator, &devices);
+
     // Deep scan: resolve hostnames and scan ports (parallelized for speed)
     if (deep_scan) {
         try stdout.print("Deep scanning (hostnames + ports)...", .{});
@@ -206,9 +217,22 @@ pub fn main() !void {
     // Sort by IP
     sortDevicesByIP(&devices);
 
+    // Count unique devices
+    const unique_count: usize = devices.items.len;
+    var multi_nic_count: usize = 0;
+    for (devices.items) |device| {
+        if (device.has_additional_macs) {
+            multi_nic_count += 1;
+        }
+    }
+
     // Print results
     try stdout.print("+-----------------------------------------------------------------------------+\n", .{});
-    try stdout.print("| DEVICES FOUND: {d} (via {s})\n", .{ devices.items.len, scan_method });
+    if (multi_nic_count > 0) {
+        try stdout.print("| DEVICES FOUND: {d} ({d} with multiple NICs) (via {s})\n", .{ unique_count, multi_nic_count, scan_method });
+    } else {
+        try stdout.print("| DEVICES FOUND: {d} (via {s})\n", .{ unique_count, scan_method });
+    }
     try stdout.print("+-----------------------------------------------------------------------------+\n\n", .{});
 
     if (deep_scan) {
@@ -249,6 +273,26 @@ pub fn main() !void {
                 device.mac,
                 truncateStr(label, 36),
             });
+        }
+
+        // Print additional MACs if present
+        if (device.has_additional_macs) {
+            for (device.additional_macs.items) |extra_mac| {
+                if (deep_scan) {
+                    try stdout.print("{s: <17} | {s: <18} | {s: <28} | {s}\n", .{
+                        "  └─ also:",
+                        extra_mac.mac,
+                        truncateStr(extra_mac.vendor, 28),
+                        "",
+                    });
+                } else {
+                    try stdout.print("{s: <17} | {s: <18} | {s}\n", .{
+                        "  └─ also:",
+                        extra_mac.mac,
+                        truncateStr(extra_mac.vendor, 36),
+                    });
+                }
+            }
         }
     }
 
@@ -913,6 +957,57 @@ fn portNumbersToNames(allocator: std.mem.Allocator, ports: []const u8) ![]const 
     return try result.toOwnedSlice();
 }
 
+fn mergeDevicesByIP(allocator: std.mem.Allocator, devices: *std.ArrayList(Device)) void {
+    if (devices.items.len < 2) return;
+
+    var i: usize = 0;
+    while (i < devices.items.len) {
+        var j: usize = i + 1;
+        while (j < devices.items.len) {
+            if (std.mem.eql(u8, devices.items[i].ip, devices.items[j].ip)) {
+                // Same IP, different MAC - merge them
+                const dup_device = devices.items[j];
+
+                // Skip if same MAC
+                if (std.mem.eql(u8, devices.items[i].mac, dup_device.mac)) {
+                    _ = devices.orderedRemove(j);
+                    continue;
+                }
+
+                // Initialize additional_macs if needed
+                if (!devices.items[i].has_additional_macs) {
+                    devices.items[i].additional_macs = std.ArrayList(MacInfo).init(allocator);
+                    devices.items[i].has_additional_macs = true;
+                }
+
+                // Add the duplicate's MAC to additional_macs
+                devices.items[i].additional_macs.append(.{
+                    .mac = dup_device.mac,
+                    .vendor = dup_device.vendor,
+                }) catch {};
+
+                // Merge hostname if the primary doesn't have one
+                if ((devices.items[i].hostname.len == 0 or std.mem.eql(u8, devices.items[i].hostname, "?")) and
+                    dup_device.hostname.len > 0 and !std.mem.eql(u8, dup_device.hostname, "?"))
+                {
+                    devices.items[i].hostname = dup_device.hostname;
+                }
+
+                // Merge open_ports if the primary doesn't have any
+                if (devices.items[i].open_ports.len == 0 and dup_device.open_ports.len > 0) {
+                    devices.items[i].open_ports = dup_device.open_ports;
+                }
+
+                // Remove the duplicate
+                _ = devices.orderedRemove(j);
+            } else {
+                j += 1;
+            }
+        }
+        i += 1;
+    }
+}
+
 // ============================================================================
 // OS and System Detection
 // ============================================================================
@@ -1100,6 +1195,8 @@ fn runArpScan(allocator: std.mem.Allocator, devices: *std.ArrayList(Device), ifa
             .vendor = vendor_copy,
             .hostname = "?",
             .open_ports = "",
+            .additional_macs = std.ArrayList(MacInfo).init(allocator),
+            .has_additional_macs = false,
         });
     }
 
@@ -1270,6 +1367,8 @@ fn ssdpDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device), 
                         .vendor = if (mac.len >= 8) lookupVendor(mac) else "UPnP Device",
                         .hostname = "?",
                         .open_ports = "",
+                        .additional_macs = std.ArrayList(MacInfo).init(allocator),
+                        .has_additional_macs = false,
                     });
                 }
             }
@@ -1393,6 +1492,8 @@ fn netbiosDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device
                     .vendor = if (mac.len >= 8 and !std.mem.eql(u8, mac, "??:??:??:??:??:??")) lookupVendor(mac) else "Windows/Samba",
                     .hostname = "?",
                     .open_ports = "",
+                    .additional_macs = std.ArrayList(MacInfo).init(allocator),
+                    .has_additional_macs = false,
                 });
             }
         }
@@ -1481,6 +1582,8 @@ fn tcpProbeDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Devic
                         .vendor = if (mac.len >= 8 and !std.mem.eql(u8, mac, "??:??:??:??:??:??")) lookupVendor(mac) else "Unknown",
                         .hostname = "?",
                         .open_ports = "",
+                        .additional_macs = std.ArrayList(MacInfo).init(allocator),
+                        .has_additional_macs = false,
                     });
                 }
             }
@@ -1567,6 +1670,8 @@ fn parseArpOutput(allocator: std.mem.Allocator, devices: *std.ArrayList(Device),
             .vendor = vendor,
             .hostname = "?",
             .open_ports = "",
+            .additional_macs = std.ArrayList(MacInfo).init(allocator),
+            .has_additional_macs = false,
         });
     }
 }
