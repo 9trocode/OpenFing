@@ -9,6 +9,25 @@
 
 **OpenFing** is a fast, lightweight network scanner written in Zig. It discovers devices on your local network and displays detailed information including IP addresses, MAC addresses, vendor/manufacturer info, and device types — similar to the popular Fing app, but open source and runs in your terminal.
 
+## Why OpenFing?
+
+Fing's original free Command Line Interface (CLI) tool has become difficult or impossible to download as the company shifted focus to paid Fing Desktop and Agent products. Their strategy now centers on subscription-based offerings (Starter and Premium tiers) for continuous monitoring and advanced features.
+
+**Problems with the new Fing model:**
+
+- **Monetization over simplicity** — Core functionality now locked behind subscription tiers
+- **Privacy concerns** — The newer apps require user accounts and upload network data to third-party servers
+- **Feature bloat** — Simple network scanning buried under GUI complexity and cloud integrations
+
+**OpenFing offers an alternative:**
+
+- ✅ **Free and open source** — No subscriptions, no accounts, no data collection
+- ✅ **Privacy-first** — All scanning happens locally, nothing leaves your machine
+- ✅ **Simple CLI** — Does one thing well: scans your network and shows you what's connected
+- ✅ **Lightweight** — Single binary, no dependencies beyond optional `arp-scan`
+
+For users who value privacy and simplicity, OpenFing brings back the straightforward network scanning experience that Fing used to provide.
+
 ## Features
 
 - 🚀 **Fast scanning** using ARP protocol
@@ -137,31 +156,37 @@ OpenFing works best with `arp-scan` installed. When running with sudo, it will o
 ### Manual Installation
 
 **macOS (Homebrew):**
+
 ```bash
 brew install arp-scan
 ```
 
 **Debian/Ubuntu:**
+
 ```bash
 sudo apt update && sudo apt install -y arp-scan
 ```
 
 **Fedora:**
+
 ```bash
 sudo dnf install -y arp-scan
 ```
 
 **RHEL/CentOS:**
+
 ```bash
 sudo yum install -y arp-scan
 ```
 
 **Arch Linux:**
+
 ```bash
 sudo pacman -S arp-scan
 ```
 
 **Alpine Linux:**
+
 ```bash
 sudo apk add arp-scan
 ```
@@ -169,25 +194,27 @@ sudo apk add arp-scan
 ## How It Works
 
 ### With sudo (Full Scan)
+
 1. Detects your network interface and subnet
 2. Uses `arp-scan` to send ARP requests to all IPs in the subnet
 3. Collects responses and identifies device vendors via MAC OUI lookup
 4. Displays results with categorization
 
 ### Without sudo (Limited Mode)
+
 1. Reads the system's ARP cache (`arp -a`)
 2. Shows only devices that have recently communicated with your machine
 3. Still performs vendor lookup and categorization
 
 ## Comparison: With vs Without sudo
 
-| Feature | Without sudo | With sudo |
-|---------|-------------|-----------|
-| Scan method | ARP cache | Full ARP scan |
-| Device discovery | Recent contacts only | All active devices |
-| Vendor lookup | ✅ | ✅ (more accurate) |
-| Speed | Instant | 2-5 seconds |
-| Requires arp-scan | ❌ | ✅ (auto-installs) |
+| Feature           | Without sudo         | With sudo          |
+| ----------------- | -------------------- | ------------------ |
+| Scan method       | ARP cache            | Full ARP scan      |
+| Device discovery  | Recent contacts only | All active devices |
+| Vendor lookup     | ✅                   | ✅ (more accurate) |
+| Speed             | Instant              | 2-5 seconds        |
+| Requires arp-scan | ❌                   | ✅ (auto-installs) |
 
 ## Supported Platforms
 
@@ -240,4 +267,3 @@ This tool is intended for network administrators and security professionals to a
 <p align="center">
   Made with ❤️ and Zig
 </p>
-# OpenFing
