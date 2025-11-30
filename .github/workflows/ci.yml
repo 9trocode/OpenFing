@@ -4,12 +4,16 @@ on:
   push:
     branches: [main, master]
     tags:
-      - 'v*'
+      - "v*"
   pull_request:
     branches: [main, master]
 
 env:
   ZIG_VERSION: 0.14.0
+
+permissions:
+  contents: write
+  packages: write
 
 jobs:
   build:
@@ -29,11 +33,11 @@ jobs:
             target: aarch64-linux
           - os: macos
             arch: x86_64
-            runner: macos-latest
+            runner: macos-13
             target: x86_64-macos
           - os: macos
             arch: arm64
-            runner: macos-latest
+            runner: macos-14
             target: aarch64-macos
 
     steps:
@@ -41,7 +45,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Zig
-        uses: goto-bus-stop/setup-zig@v2
+        uses: mlugg/setup-zig@v1
         with:
           version: ${{ env.ZIG_VERSION }}
 
@@ -55,11 +59,7 @@ jobs:
       - name: Rename binary
         run: |
           mkdir -p dist
-          if [ "${{ matrix.os }}" = "macos" ]; then
-            cp zig-out/bin/openfing dist/openfing-${{ matrix.os }}-${{ matrix.arch }}
-          else
-            cp zig-out/bin/openfing dist/openfing-${{ matrix.os }}-${{ matrix.arch }}
-          fi
+          cp zig-out/bin/openfing dist/openfing-${{ matrix.os }}-${{ matrix.arch }}
           chmod +x dist/openfing-${{ matrix.os }}-${{ matrix.arch }}
 
       - name: Upload artifact
@@ -67,15 +67,13 @@ jobs:
         with:
           name: openfing-${{ matrix.os }}-${{ matrix.arch }}
           path: dist/openfing-${{ matrix.os }}-${{ matrix.arch }}
-          retention-days: 7
+          retention-days: 30
 
   release:
-    name: Release
+    name: Create Release
     needs: build
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout
@@ -85,6 +83,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: false
 
       - name: Prepare release assets
         run: |
@@ -97,44 +96,53 @@ jobs:
           done
           ls -la
 
-      - name: Generate changelog
-        id: changelog
+      - name: Generate release notes
         run: |
-          echo "## What's New" > CHANGELOG.md
-          echo "" >> CHANGELOG.md
-          echo "### Installation" >> CHANGELOG.md
-          echo "" >> CHANGELOG.md
-          echo '```bash' >> CHANGELOG.md
-          echo "# macOS (Apple Silicon)" >> CHANGELOG.md
-          echo "curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-macos-arm64 -o openfing" >> CHANGELOG.md
-          echo "chmod +x openfing && sudo mv openfing /usr/local/bin/" >> CHANGELOG.md
-          echo "" >> CHANGELOG.md
-          echo "# macOS (Intel)" >> CHANGELOG.md
-          echo "curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-macos-x86_64 -o openfing" >> CHANGELOG.md
-          echo "chmod +x openfing && sudo mv openfing /usr/local/bin/" >> CHANGELOG.md
-          echo "" >> CHANGELOG.md
-          echo "# Linux (x86_64)" >> CHANGELOG.md
-          echo "curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-linux-x86_64 -o openfing" >> CHANGELOG.md
-          echo "chmod +x openfing && sudo mv openfing /usr/local/bin/" >> CHANGELOG.md
-          echo "" >> CHANGELOG.md
-          echo "# Linux (ARM64)" >> CHANGELOG.md
-          echo "curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-linux-arm64 -o openfing" >> CHANGELOG.md
-          echo "chmod +x openfing && sudo mv openfing /usr/local/bin/" >> CHANGELOG.md
-          echo '```' >> CHANGELOG.md
-          echo "" >> CHANGELOG.md
-          echo "### Checksums" >> CHANGELOG.md
-          echo "" >> CHANGELOG.md
-          echo '```' >> CHANGELOG.md
-          cat release/*.sha256 >> CHANGELOG.md
-          echo '```' >> CHANGELOG.md
+          VERSION="${{ github.ref_name }}"
+          cat > RELEASE_NOTES.md << 'EOF'
+          ## OpenFing ${{ github.ref_name }}
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+          A fast, lightweight, privacy-focused network scanner for your terminal.
+
+          ### Installation
+
+          **macOS (Apple Silicon):**
+          ```bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-macos-arm64 -o openfing
+          chmod +x openfing && sudo mv openfing /usr/local/bin/
+          ```
+
+          **macOS (Intel):**
+          ```bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-macos-x86_64 -o openfing
+          chmod +x openfing && sudo mv openfing /usr/local/bin/
+          ```
+
+          **Linux (x86_64):**
+          ```bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-linux-x86_64 -o openfing
+          chmod +x openfing && sudo mv openfing /usr/local/bin/
+          ```
+
+          **Linux (ARM64):**
+          ```bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-linux-arm64 -o openfing
+          chmod +x openfing && sudo mv openfing /usr/local/bin/
+          ```
+
+          ### Checksums (SHA256)
+          EOF
+          echo '```' >> RELEASE_NOTES.md
+          cat release/*.sha256 >> RELEASE_NOTES.md
+          echo '```' >> RELEASE_NOTES.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          body_path: CHANGELOG.md
+          body_path: RELEASE_NOTES.md
           files: |
             release/openfing-*
           draft: false
           prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          generate_release_notes: true
+          append_body: true

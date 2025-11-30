@@ -67,9 +67,28 @@ chmod +x openfing
 sudo mv openfing /usr/local/bin/
 ```
 
+### As a Zig Package Dependency
+
+Add to your `build.zig.zon`:
+
+```zig
+.dependencies = .{
+    .openfing = .{
+        .url = "https://github.com/yourusername/OpenFing/archive/refs/tags/v1.0.0.tar.gz",
+        .hash = "...", // zig build will tell you the correct hash
+    },
+},
+```
+
+Then fetch and build:
+
+```bash
+zig fetch --save https://github.com/yourusername/OpenFing/archive/refs/tags/v1.0.0.tar.gz
+```
+
 ### Build from Source
 
-Requires [Zig](https://ziglang.org/download/) 0.13.0 or later.
+Requires [Zig](https://ziglang.org/download/) 0.14.0 or later.
 
 ```bash
 git clone https://github.com/yourusername/OpenFing.git
