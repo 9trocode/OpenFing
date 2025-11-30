@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const VERSION = "1.4.1";
+const VERSION = "1.5.1";
 const GITHUB_REPO = "9trocode/OpenFing";
 const GITHUB_API_URL = "https://api.github.com/repos/" ++ GITHUB_REPO ++ "/releases/latest";
 
@@ -123,9 +123,10 @@ pub fn main() !void {
         return;
     }
 
-    // Background update check (non-blocking)
+    // Background update check - stores result for display at end
+    var update_available: ?[]const u8 = null;
     if (!no_update) {
-        spawnBackgroundUpdateCheck(allocator);
+        update_available = checkForUpdateNotification(allocator);
     }
 
     // Header
@@ -195,26 +196,11 @@ pub fn main() !void {
         return;
     }
 
-    // Deep scan: resolve hostnames and scan ports
+    // Deep scan: resolve hostnames and scan ports (parallelized for speed)
     if (deep_scan) {
-        try stdout.print("Deep scanning (hostnames + ports)...\n", .{});
-        for (devices.items, 0..) |*device, idx| {
-            // Hostname resolution
-            const hostname = try resolveHostname(allocator, device.ip);
-            if (hostname) |h| {
-                device.hostname = h;
-            }
-
-            // Port scanning
-            const ports = try scanCommonPorts(allocator, device.ip);
-            device.open_ports = ports;
-
-            // Progress
-            if (idx % 2 == 0) {
-                try stdout.print("  Scanned {d}/{d} devices\r", .{ idx + 1, devices.items.len });
-            }
-        }
-        try stdout.print("  Scanned {d}/{d} devices\n\n", .{ devices.items.len, devices.items.len });
+        try stdout.print("Deep scanning (hostnames + ports)...", .{});
+        try parallelDeepScan(allocator, &devices);
+        try stdout.print(" done\n\n", .{});
     }
 
     // Sort by IP
@@ -288,8 +274,13 @@ pub fn main() !void {
         }
     }
 
-    // Check if update was downloaded in background
-    checkForPendingUpdate(allocator, &stdout);
+    // Show update notification at the end (gh-style)
+    if (update_available) |new_version| {
+        try stdout.print("\n", .{});
+        try stdout.print("A new release of openfing is available: {s} → {s}\n", .{ VERSION, new_version });
+        try stdout.print("To upgrade, run: openfing --update\n", .{});
+        try stdout.print("https://github.com/9trocode/OpenFing/releases/tag/v{s}\n", .{new_version});
+    }
 }
 
 // ============================================================================
@@ -654,58 +645,272 @@ fn savePendingUpdate(allocator: std.mem.Allocator, version: []const u8, path: []
     _ = try file.write(path);
 }
 
-fn checkForPendingUpdate(allocator: std.mem.Allocator, stdout: anytype) void {
-    const config_dir = getConfigDir(allocator) catch return;
-    defer allocator.free(config_dir);
-
-    const pending_path = std.fmt.allocPrint(allocator, "{s}/pending_update", .{config_dir}) catch return;
-    defer allocator.free(pending_path);
-
-    const file = std.fs.openFileAbsolute(pending_path, .{}) catch return;
-    defer file.close();
-
-    var buf: [256]u8 = undefined;
-    const bytes_read = file.readAll(&buf) catch return;
-    if (bytes_read == 0) return;
-
-    var lines = std.mem.splitScalar(u8, buf[0..bytes_read], '\n');
-    const version = lines.next() orelse return;
-
-    stdout.print("\n[Update Available] OpenFing v{s} is ready to install.\n", .{version}) catch {};
-    stdout.print("Run 'sudo openfing --update' to complete the update.\n\n", .{}) catch {};
-}
-
-fn clearPendingUpdate(allocator: std.mem.Allocator) void {
-    const config_dir = getConfigDir(allocator) catch return;
-    defer allocator.free(config_dir);
-
-    const pending_path = std.fmt.allocPrint(allocator, "{s}/pending_update", .{config_dir}) catch return;
-    defer allocator.free(pending_path);
-
-    std.fs.deleteFileAbsolute(pending_path) catch {};
-}
-
-fn spawnBackgroundUpdateCheck(allocator: std.mem.Allocator) void {
-    // Only check if it's time (don't spawn process unnecessarily)
+fn checkForUpdateNotification(allocator: std.mem.Allocator) ?[]const u8 {
+    // Check if we should check for updates (once per day)
     if (!shouldCheckForUpdates(allocator)) {
-        return;
+        // Check if there's a cached update notification
+        return getCachedUpdateVersion(allocator);
     }
 
-    // Get the path to self
-    const self_path = getSelfPath(allocator) catch return;
-    defer allocator.free(self_path);
+    // Update last check time
+    setLastCheckTime(allocator, std.time.timestamp()) catch {};
 
-    // Spawn a background process to check for updates
-    // This runs in the background and won't block the main process
-    var cmd_buf: [512]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, "(\"{s}\" --update >/dev/null 2>&1 &)", .{self_path}) catch return;
+    // Fetch latest release info from GitHub (quick check)
+    const json = fetchLatestRelease(allocator) catch {
+        return getCachedUpdateVersion(allocator);
+    };
+    defer allocator.free(json);
 
-    _ = std.process.Child.run(.{
+    // Parse version from JSON
+    const latest_version = parseVersionFromJson(json) orelse {
+        return getCachedUpdateVersion(allocator);
+    };
+
+    // Compare versions
+    if (compareVersions(VERSION, latest_version) >= 0) {
+        // We're up to date, clear any cached notification
+        clearCachedUpdate(allocator);
+        return null;
+    }
+
+    // Cache the new version for future runs
+    cacheUpdateVersion(allocator, latest_version) catch {};
+
+    // Return a copy of the version string
+    return allocator.dupe(u8, latest_version) catch null;
+}
+
+fn getCachedUpdateVersion(allocator: std.mem.Allocator) ?[]const u8 {
+    const config_dir = getConfigDir(allocator) catch return null;
+    defer allocator.free(config_dir);
+
+    const cache_path = std.fmt.allocPrint(allocator, "{s}/available_update", .{config_dir}) catch return null;
+    defer allocator.free(cache_path);
+
+    const file = std.fs.openFileAbsolute(cache_path, .{}) catch return null;
+    defer file.close();
+
+    var buf: [32]u8 = undefined;
+    const bytes_read = file.readAll(&buf) catch return null;
+    if (bytes_read == 0) return null;
+
+    const version = std.mem.trimRight(u8, buf[0..bytes_read], "\n\r ");
+    if (version.len == 0) return null;
+
+    // Verify it's actually newer than current
+    if (compareVersions(VERSION, version) >= 0) {
+        return null;
+    }
+
+    return allocator.dupe(u8, version) catch null;
+}
+
+fn cacheUpdateVersion(allocator: std.mem.Allocator, version: []const u8) !void {
+    try ensureConfigDir(allocator);
+
+    const config_dir = try getConfigDir(allocator);
+    defer allocator.free(config_dir);
+
+    const cache_path = try std.fmt.allocPrint(allocator, "{s}/available_update", .{config_dir});
+    defer allocator.free(cache_path);
+
+    const file = try std.fs.createFileAbsolute(cache_path, .{});
+    defer file.close();
+
+    _ = try file.write(version);
+}
+
+fn clearCachedUpdate(allocator: std.mem.Allocator) void {
+    const config_dir = getConfigDir(allocator) catch return;
+    defer allocator.free(config_dir);
+
+    const cache_path = std.fmt.allocPrint(allocator, "{s}/available_update", .{config_dir}) catch return;
+    defer allocator.free(cache_path);
+
+    std.fs.deleteFileAbsolute(cache_path) catch {};
+}
+
+fn parallelDeepScan(allocator: std.mem.Allocator, devices: *std.ArrayList(Device)) !void {
+    if (devices.items.len == 0) return;
+
+    // Build a list of IPs to scan
+    var ip_list = std.ArrayList(u8).init(allocator);
+    defer ip_list.deinit();
+
+    for (devices.items) |device| {
+        try ip_list.appendSlice(device.ip);
+        try ip_list.append(' ');
+    }
+
+    const os_type = detectOS();
+
+    // Single combined command that does EVERYTHING in parallel:
+    // - All hostname lookups run in parallel
+    // - All port scans for all IPs run in parallel (not sequential per IP)
+    // This is MUCH faster than nested loops
+    var cmd_buf: [8192]u8 = undefined;
+    const cmd = switch (os_type) {
+        .macos => std.fmt.bufPrint(&cmd_buf,
+            \\#!/bin/bash
+            \\# Parallel hostname resolution (all at once)
+            \\for ip in {s}; do
+            \\  (h=$(host -W 1 $ip 2>/dev/null | grep -m1 'domain name pointer' | awk '{{print $NF}}' | sed 's/\.$//'); [ -n "$h" ] && echo "HOST:$ip:$h") &
+            \\done
+            \\# Parallel port scanning (all IPs x all ports at once)
+            \\for ip in {s}; do
+            \\  for port in 22 80 443 445 8080; do
+            \\    (nc -z -G1 -w1 $ip $port 2>/dev/null && echo "PORT:$ip:$port") &
+            \\  done
+            \\done
+            \\wait
+        , .{ ip_list.items, ip_list.items }) catch return,
+        .linux => std.fmt.bufPrint(&cmd_buf,
+            \\#!/bin/bash
+            \\# Parallel hostname resolution (all at once)
+            \\for ip in {s}; do
+            \\  (h=$(host -W 1 $ip 2>/dev/null | grep -m1 'domain name pointer' | awk '{{print $NF}}' | sed 's/\.$//'); [ -n "$h" ] && echo "HOST:$ip:$h") &
+            \\done
+            \\# Parallel port scanning (all IPs x all ports at once)
+            \\for ip in {s}; do
+            \\  for port in 22 80 443 445 8080; do
+            \\    (timeout 1 nc -z $ip $port 2>/dev/null && echo "PORT:$ip:$port") &
+            \\  done
+            \\done
+            \\wait
+        , .{ ip_list.items, ip_list.items }) catch return,
+        .unknown => return,
+    };
+
+    const result = std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &[_][]const u8{ "sh", "-c", cmd },
+        .argv = &[_][]const u8{ "bash", "-c", cmd },
+        .max_output_bytes = 1024 * 1024,
     }) catch return;
 
-    // The shell command forks to background, so run() returns quickly
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    // Collect ports per IP
+    var port_map = std.StringHashMap(std.ArrayList(u16)).init(allocator);
+    defer {
+        var it = port_map.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit();
+        }
+        port_map.deinit();
+    }
+
+    // Parse results - format is "HOST:ip:hostname" or "PORT:ip:port"
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        if (line.len < 5) continue;
+
+        if (std.mem.startsWith(u8, line, "HOST:")) {
+            // Parse hostname: HOST:192.168.1.1:router.local
+            const rest = line[5..];
+            if (std.mem.indexOf(u8, rest, ":")) |colon_idx| {
+                const ip = rest[0..colon_idx];
+                const hostname = rest[colon_idx + 1 ..];
+                if (hostname.len > 0) {
+                    for (devices.items) |*device| {
+                        if (std.mem.eql(u8, device.ip, ip)) {
+                            device.hostname = allocator.dupe(u8, hostname) catch "?";
+                            break;
+                        }
+                    }
+                }
+            }
+        } else if (std.mem.startsWith(u8, line, "PORT:")) {
+            // Parse port: PORT:192.168.1.1:22
+            const rest = line[5..];
+            if (std.mem.indexOf(u8, rest, ":")) |colon_idx| {
+                const ip = rest[0..colon_idx];
+                const port_str = rest[colon_idx + 1 ..];
+                const port = std.fmt.parseInt(u16, port_str, 10) catch continue;
+
+                // Add to port map
+                const gop = port_map.getOrPut(ip) catch continue;
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = std.ArrayList(u16).init(allocator);
+                }
+                // Check for duplicates before adding
+                var already_exists = false;
+                for (gop.value_ptr.items) |existing_port| {
+                    if (existing_port == port) {
+                        already_exists = true;
+                        break;
+                    }
+                }
+                if (!already_exists) {
+                    gop.value_ptr.append(port) catch continue;
+                }
+            }
+        }
+    }
+
+    // Apply collected ports to devices
+    for (devices.items) |*device| {
+        if (port_map.get(device.ip)) |port_list| {
+            if (port_list.items.len > 0) {
+                var port_names = std.ArrayList(u8).init(allocator);
+                for (port_list.items, 0..) |port, i| {
+                    if (i > 0) port_names.append(',') catch continue;
+                    const name: []const u8 = switch (port) {
+                        22 => "SSH",
+                        80 => "HTTP",
+                        443 => "HTTPS",
+                        445 => "SMB",
+                        548 => "AFP",
+                        3389 => "RDP",
+                        5000 => "UPnP",
+                        8080 => "HTTP-Alt",
+                        else => "?",
+                    };
+                    port_names.appendSlice(name) catch continue;
+                }
+                device.open_ports = port_names.toOwnedSlice() catch "";
+            }
+        }
+    }
+}
+
+fn portNumbersToNames(allocator: std.mem.Allocator, ports: []const u8) ![]const u8 {
+    var result = std.ArrayList(u8).init(allocator);
+    errdefer result.deinit();
+
+    var port_iter = std.mem.splitScalar(u8, ports, ',');
+    var first = true;
+
+    while (port_iter.next()) |port_str| {
+        if (port_str.len == 0) continue;
+
+        if (!first) {
+            try result.append(',');
+        }
+        first = false;
+
+        const port = std.fmt.parseInt(u16, port_str, 10) catch {
+            try result.appendSlice(port_str);
+            continue;
+        };
+
+        const name: []const u8 = switch (port) {
+            22 => "SSH",
+            80 => "HTTP",
+            443 => "HTTPS",
+            445 => "SMB",
+            548 => "AFP",
+            3389 => "RDP",
+            5000 => "UPnP",
+            8080 => "HTTP-Alt",
+            9100 => "Print",
+            62078 => "iPhone",
+            else => port_str,
+        };
+        try result.appendSlice(name);
+    }
+
+    return try result.toOwnedSlice();
 }
 
 // ============================================================================
