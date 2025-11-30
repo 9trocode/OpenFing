@@ -1,10 +1,10 @@
 #!/bin/bash
 #
 # OpenFing Installation Script
-# https://github.com/yourusername/OpenFing
+# https://github.com/9trocode/OpenFing
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/yourusername/OpenFing/main/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/9trocode/OpenFing/main/install.sh | bash
 #
 
 set -e
@@ -17,7 +17,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-REPO="yourusername/OpenFing"
+REPO="9trocode/OpenFing"
 BINARY_NAME="openfing"
 INSTALL_DIR="/usr/local/bin"
 

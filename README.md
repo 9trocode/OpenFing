@@ -33,57 +33,45 @@ For users who value privacy and simplicity, OpenFing brings back the straightfor
 - **Fast scanning** using ARP protocol
 - **Device discovery** on local network
 - **Vendor identification** from MAC address (OUI lookup)
-- **Device categorization** (Apple, Android, IoT, Computers, etc.)
-- **Works without sudo** (limited mode using ARP cache)
+- **Deep scan mode** for hostname resolution and port detection
+- **Works without sudo** (multi-method discovery: ping, mDNS, SSDP, TCP probes)
+- **Auto-update notifications** (gh-style update prompts)
 - **Auto-install dependencies** (detects your package manager)
 - **Cross-platform** (macOS and Linux)
 - **Zero dependencies** (single binary)
 
 ## Quick Start
 
-### Download Pre-built Binary
+### One-Line Install (Recommended)
+
+**macOS (Apple Silicon):**
 
 ```bash
-# macOS (Apple Silicon)
-curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-macos-arm64 -o openfing
-chmod +x openfing
-
-# macOS (Intel)
-curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-macos-x86_64 -o openfing
-chmod +x openfing
-
-# Linux (x86_64)
-curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-linux-x86_64 -o openfing
-chmod +x openfing
-
-# Linux (ARM64)
-curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-linux-arm64 -o openfing
-chmod +x openfing
+curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-macos-arm64 -o openfing && chmod +x openfing && sudo mv openfing /usr/local/bin/
 ```
 
-### Install System-wide
+**macOS (Intel):**
 
 ```bash
-sudo mv openfing /usr/local/bin/
+curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-macos-x86_64 -o openfing && chmod +x openfing && sudo mv openfing /usr/local/bin/
 ```
 
-### As a Zig Package Dependency
-
-Add to your `build.zig.zon`:
-
-```zig
-.dependencies = .{
-    .openfing = .{
-        .url = "https://github.com/9trocode/OpenFing/archive/refs/tags/v1.4.0.tar.gz",
-        .hash = "...", // zig build will tell you the correct hash
-    },
-},
-```
-
-Then fetch and build:
+**Linux (x86_64):**
 
 ```bash
-zig fetch --save https://github.com/9trocode/OpenFing/archive/refs/tags/v1.4.0.tar.gz
+curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-linux-x86_64 -o openfing && chmod +x openfing && sudo mv openfing /usr/local/bin/
+```
+
+**Linux (ARM64/Raspberry Pi):**
+
+```bash
+curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-linux-arm64 -o openfing && chmod +x openfing && sudo mv openfing /usr/local/bin/
+```
+
+### Install Script
+
+```bash
+curl -sSL https://raw.githubusercontent.com/9trocode/OpenFing/main/install.sh | bash
 ```
 
 ### Build from Source
@@ -94,42 +82,27 @@ Requires [Zig](https://ziglang.org/download/) 0.14.0 or later.
 git clone https://github.com/9trocode/OpenFing.git
 cd OpenFing
 zig build -Doptimize=ReleaseFast
+sudo mv zig-out/bin/openfing /usr/local/bin/
 ```
-
-The binary will be at `./zig-out/bin/openfing`
 
 ## Usage
 
-### Basic Scan (without sudo)
-
 ```bash
-openfing
-```
-
-This runs in **limited mode** using only the ARP cache — showing devices you've recently communicated with.
-
-### Full Network Scan (with sudo)
-
-```bash
-sudo openfing
-```
-
-This performs a **full ARP scan** of your network, discovering all active devices.
-
-### Specify Network Interface
-
-```bash
-sudo openfing en0      # macOS
-sudo openfing eth0     # Linux
-sudo openfing wlan0    # Linux WiFi
+openfing                      # Quick scan (no sudo needed)
+sudo openfing                 # Full network scan (fast)
+sudo openfing --deep          # Full scan + hostnames + ports (~4 seconds)
+sudo openfing en0             # Scan specific interface
+sudo openfing --install-deps  # Install arp-scan for best results
+openfing --update             # Check for and install updates
+openfing --help               # Show all options
 ```
 
 ## Example Output
 
 ```
 +==============================================================================+
-|                              OpenFing v1.0.0                                 |
-|                    Fast Network Scanner for Your Terminal                    |
+|                              OpenFing v1.5.1                                 |
+|                         Fast Network Device Scanner                          |
 +==============================================================================+
 
 Network Information:
@@ -139,41 +112,54 @@ Network Information:
   Subnet        : 192.168.1.0/24
   Interface     : en0
   Running as    : root/sudo
+  Scan mode     : deep (ports + hostnames)
 
-Scanning network for devices...
+Scanning done
 
-+-----------------------------------------------------------------------------+
-| DISCOVERED DEVICES (5 found via arp-scan (full scan))
-+-----------------------------------------------------------------------------+
-
-IP ADDRESS        | MAC ADDRESS        | VENDOR/HOSTNAME                    | STATUS
-------------------+--------------------+------------------------------------+--------
-192.168.1.1       | e8:ea:4d:1d:3a:45  | HUAWEI TECHNOLOGIES (GATEWAY)      | Online
-192.168.1.50      | 4c:20:b8:db:d5:e8  | Apple, Inc.                        | Online
-192.168.1.100     | be:29:e5:69:04:e0  | Unknown (THIS DEVICE)              | Online
-192.168.1.105     | b0:41:6f:0d:78:17  | Intel Corporate                    | Online
-192.168.1.110     | 24:0d:c2:a1:b2:c3  | Espressif (IoT)                    | Online
+Deep scanning (hostnames + ports)... done
 
 +-----------------------------------------------------------------------------+
-| SUMMARY                                                                     |
-+-----------------------------------------------------------------------------+
-| Total Devices   : 5                                                         |
-| Online          : 5                                                         |
+| DEVICES FOUND: 5 (via arp-scan)
 +-----------------------------------------------------------------------------+
 
-Device Types (estimated):
--------------------------
-  Apple Devices   : 1
-  Computers       : 1
-  IoT/Smart Home  : 1
-  Other/Unknown   : 2
+IP ADDRESS        | MAC ADDRESS        | VENDOR/HOST                  | PORTS
+------------------+--------------------+------------------------------+----------
+192.168.1.1       | e8:ea:4d:1d:3a:45  | HUAWEI TECHNOLOGIES CO.,LTD  | HTTP
+192.168.1.50      | 4c:20:b8:db:d5:e8  | Apple, Inc.                  | SSH
+192.168.1.100     | be:29:e5:69:04:e0  | Unknown (THIS)               | -
+192.168.1.105     | b0:41:6f:0d:78:17  | Shenzhen Maxtang             | SSH,HTTP,RDP
+192.168.1.110     | 24:0d:c2:a1:b2:c3  | Espressif (IoT)              | HTTP
+
+Total: 5 devices
+
+Devices with open ports:
+  192.168.1.1     : HTTP
+  192.168.1.50    : SSH
+  192.168.1.105   : SSH,HTTP,RDP
+  192.168.1.110   : HTTP
 ```
+
+## Auto-Update
+
+OpenFing checks for updates once per day and shows a notification at the end of your scan:
+
+```
+A new release of openfing is available: 1.5.0 → 1.5.1
+To upgrade, run: openfing --update
+https://github.com/9trocode/OpenFing/releases/tag/v1.5.1
+```
+
+Use `--no-update` to disable update checking.
 
 ## Installation of Dependencies
 
-OpenFing works best with `arp-scan` installed. When running with sudo, it will offer to install it automatically.
+OpenFing works best with `arp-scan` installed for full network scanning. You can install it with:
 
-### Manual Installation
+```bash
+sudo openfing --install-deps
+```
+
+Or manually:
 
 **macOS (Homebrew):**
 
@@ -193,22 +179,10 @@ sudo apt update && sudo apt install -y arp-scan
 sudo dnf install -y arp-scan
 ```
 
-**RHEL/CentOS:**
-
-```bash
-sudo yum install -y arp-scan
-```
-
 **Arch Linux:**
 
 ```bash
 sudo pacman -S arp-scan
-```
-
-**Alpine Linux:**
-
-```bash
-sudo apk add arp-scan
 ```
 
 ## How It Works
@@ -218,23 +192,28 @@ sudo apk add arp-scan
 1. Detects your network interface and subnet
 2. Uses `arp-scan` to send ARP requests to all IPs in the subnet
 3. Collects responses and identifies device vendors via MAC OUI lookup
-4. Displays results with categorization
+4. Optionally resolves hostnames and scans ports (with `--deep`)
 
-### Without sudo (Limited Mode)
+### Without sudo (Multi-Method Discovery)
 
-1. Reads the system's ARP cache (`arp -a`)
-2. Shows only devices that have recently communicated with your machine
-3. Still performs vendor lookup and categorization
+1. Ping sweep to populate ARP cache
+2. mDNS/Bonjour discovery (finds Apple devices, printers, Chromecasts)
+3. SSDP/UPnP discovery (finds routers, smart TVs, gaming consoles)
+4. TCP port probing (triggers ARP entries for servers)
+5. NetBIOS discovery (finds Windows/Samba devices)
+6. Reads the combined ARP cache
+
+This multi-method approach often finds **more devices** than traditional sudo-only scanners!
 
 ## Comparison: With vs Without sudo
 
-| Feature           | Without sudo         | With sudo           |
-| ----------------- | -------------------- | ------------------- |
-| Scan method       | ARP cache            | Full ARP scan       |
-| Device discovery  | Recent contacts only | All active devices  |
-| Vendor lookup     | Yes                  | Yes (more accurate) |
-| Speed             | Instant              | 2-5 seconds         |
-| Requires arp-scan | No                   | Yes (auto-installs) |
+| Feature           | Without sudo                | With sudo           |
+| ----------------- | --------------------------- | ------------------- |
+| Scan method       | Multi-method discovery      | Full ARP scan       |
+| Device discovery  | Excellent (multiple probes) | All active devices  |
+| Vendor lookup     | Yes                         | Yes (more accurate) |
+| Speed             | ~5 seconds                  | ~2 seconds          |
+| Requires arp-scan | No                          | Yes (auto-installs) |
 
 ## Supported Platforms
 
@@ -265,7 +244,7 @@ zig build -Doptimize=ReleaseFast
 zig build run
 
 # Run with arguments
-zig build run -- en0
+zig build run -- --deep
 ```
 
 ## License
@@ -285,5 +264,5 @@ This tool is intended for network administrators and security professionals to a
 ---
 
 <p align="center">
-  Made with Zig
+  Made with ❤️ and Zig
 </p>
