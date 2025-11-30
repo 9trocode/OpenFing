@@ -4,7 +4,7 @@
   <img src="https://img.shields.io/badge/language-Zig-f7a41d?style=flat-square" alt="Zig">
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue?style=flat-square" alt="Platform">
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License">
-  <img src="https://img.shields.io/github/v/release/yourusername/OpenFing?style=flat-square" alt="Release">
+  <img src="https://img.shields.io/github/v/release/9trocode/OpenFing?style=flat-square" alt="Release">
 </p>
 
 **OpenFing** is a fast, lightweight network scanner written in Zig. It discovers devices on your local network and displays detailed information including IP addresses, MAC addresses, vendor/manufacturer info, and device types — similar to the popular Fing app, but open source and runs in your terminal.
@@ -45,19 +45,19 @@ For users who value privacy and simplicity, OpenFing brings back the straightfor
 
 ```bash
 # macOS (Apple Silicon)
-curl -L https://github.com/yourusername/OpenFing/releases/latest/download/openfing-macos-arm64 -o openfing
+curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-macos-arm64 -o openfing
 chmod +x openfing
 
 # macOS (Intel)
-curl -L https://github.com/yourusername/OpenFing/releases/latest/download/openfing-macos-x86_64 -o openfing
+curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-macos-x86_64 -o openfing
 chmod +x openfing
 
 # Linux (x86_64)
-curl -L https://github.com/yourusername/OpenFing/releases/latest/download/openfing-linux-x86_64 -o openfing
+curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-linux-x86_64 -o openfing
 chmod +x openfing
 
 # Linux (ARM64)
-curl -L https://github.com/yourusername/OpenFing/releases/latest/download/openfing-linux-arm64 -o openfing
+curl -L https://github.com/9trocode/OpenFing/releases/latest/download/openfing-linux-arm64 -o openfing
 chmod +x openfing
 ```
 
@@ -74,7 +74,7 @@ Add to your `build.zig.zon`:
 ```zig
 .dependencies = .{
     .openfing = .{
-        .url = "https://github.com/yourusername/OpenFing/archive/refs/tags/v1.0.0.tar.gz",
+        .url = "https://github.com/9trocode/OpenFing/archive/refs/tags/v1.4.0.tar.gz",
         .hash = "...", // zig build will tell you the correct hash
     },
 },
@@ -83,7 +83,7 @@ Add to your `build.zig.zon`:
 Then fetch and build:
 
 ```bash
-zig fetch --save https://github.com/yourusername/OpenFing/archive/refs/tags/v1.0.0.tar.gz
+zig fetch --save https://github.com/9trocode/OpenFing/archive/refs/tags/v1.4.0.tar.gz
 ```
 
 ### Build from Source
@@ -91,7 +91,7 @@ zig fetch --save https://github.com/yourusername/OpenFing/archive/refs/tags/v1.0
 Requires [Zig](https://ziglang.org/download/) 0.14.0 or later.
 
 ```bash
-git clone https://github.com/yourusername/OpenFing.git
+git clone https://github.com/9trocode/OpenFing.git
 cd OpenFing
 zig build -Doptimize=ReleaseFast
 ```
