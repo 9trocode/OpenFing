@@ -1,0 +1,37 @@
+# Zig build artifacts
+zig-out/
+zig-cache/
+.zig-cache/
+
+# Build directories
+dist/
+release/
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Linux
+*~
+
+# Logs
+*.log
+
+# Test artifacts
+test-results/
+coverage/
+
+# Local development
+.env
+.env.local
