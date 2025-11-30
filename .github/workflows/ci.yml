@@ -33,11 +33,11 @@ jobs:
             target: aarch64-linux
           - os: macos
             arch: x86_64
-            runner: macos-13
+            runner: macos-15-large
             target: x86_64-macos
           - os: macos
             arch: arm64
-            runner: macos-14
+            runner: macos-latest
             target: aarch64-macos
 
     steps:
@@ -69,15 +69,71 @@ jobs:
           path: dist/openfing-${{ matrix.os }}-${{ matrix.arch }}
           retention-days: 30
 
-  release:
-    name: Create Release
-    needs: build
+  version:
+    name: Determine Version
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
-
+    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+    outputs:
+      new_tag: ${{ steps.version.outputs.new_tag }}
+      should_release: ${{ steps.version.outputs.should_release }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Get version from build.zig.zon
+        id: version
+        run: |
+          VERSION=$(grep -oP '\.version\s*=\s*"\K[^"]+' build.zig.zon)
+          echo "Version from build.zig.zon: $VERSION"
+
+          NEW_TAG="v${VERSION}"
+          echo "new_tag=${NEW_TAG}" >> $GITHUB_OUTPUT
+
+          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag $NEW_TAG already exists, skipping release"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+          else
+            echo "Tag $NEW_TAG does not exist, will create release"
+            echo "should_release=true" >> $GITHUB_OUTPUT
+          fi
+
+  create-tag:
+    name: Create Tag
+    needs: [build, version]
+    runs-on: ubuntu-latest
+    if: needs.version.outputs.should_release == 'true'
+    outputs:
+      tag: ${{ needs.version.outputs.new_tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create and push tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ needs.version.outputs.new_tag }}" -m "Release ${{ needs.version.outputs.new_tag }}"
+          git push origin "${{ needs.version.outputs.new_tag }}"
+
+  release:
+    name: Create Release
+    needs: [build, create-tag]
+    runs-on: ubuntu-latest
+    if: always() && (needs.create-tag.result == 'success' || startsWith(github.ref, 'refs/tags/v'))
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine tag name
+        id: tag
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ needs.create-tag.outputs.tag }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -98,51 +154,52 @@ jobs:
 
       - name: Generate release notes
         run: |
-          VERSION="${{ github.ref_name }}"
-          cat > RELEASE_NOTES.md << 'EOF'
-          ## OpenFing ${{ github.ref_name }}
+          TAG="${{ steps.tag.outputs.tag }}"
+          cat > RELEASE_NOTES.md << EOF
+          ## OpenFing ${TAG}
 
           A fast, lightweight, privacy-focused network scanner for your terminal.
 
           ### Installation
 
           **macOS (Apple Silicon):**
-          ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-macos-arm64 -o openfing
+          \`\`\`bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${TAG}/openfing-macos-arm64 -o openfing
           chmod +x openfing && sudo mv openfing /usr/local/bin/
-          ```
+          \`\`\`
 
           **macOS (Intel):**
-          ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-macos-x86_64 -o openfing
+          \`\`\`bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${TAG}/openfing-macos-x86_64 -o openfing
           chmod +x openfing && sudo mv openfing /usr/local/bin/
-          ```
+          \`\`\`
 
           **Linux (x86_64):**
-          ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-linux-x86_64 -o openfing
+          \`\`\`bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${TAG}/openfing-linux-x86_64 -o openfing
           chmod +x openfing && sudo mv openfing /usr/local/bin/
-          ```
+          \`\`\`
 
           **Linux (ARM64):**
-          ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/openfing-linux-arm64 -o openfing
+          \`\`\`bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${TAG}/openfing-linux-arm64 -o openfing
           chmod +x openfing && sudo mv openfing /usr/local/bin/
-          ```
+          \`\`\`
 
           ### Checksums (SHA256)
+          \`\`\`
+          $(cat release/*.sha256)
+          \`\`\`
           EOF
-          echo '```' >> RELEASE_NOTES.md
-          cat release/*.sha256 >> RELEASE_NOTES.md
-          echo '```' >> RELEASE_NOTES.md
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.tag.outputs.tag }}
           body_path: RELEASE_NOTES.md
           files: |
             release/openfing-*
           draft: false
-          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}
+          prerelease: ${{ contains(steps.tag.outputs.tag, 'alpha') || contains(steps.tag.outputs.tag, 'beta') || contains(steps.tag.outputs.tag, 'rc') }}
           generate_release_notes: true
           append_body: true
