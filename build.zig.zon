@@ -1,6 +1,6 @@
 .{
     .name = .openfing,
-    .version = "1.0.0",
+    .version = "1.4.0",
     .fingerprint = 0x8f590032fea3bc71,
     .minimum_zig_version = "0.14.0",
     .dependencies = .{},
