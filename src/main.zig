@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 const GITHUB_REPO = "9trocode/OpenFing";
 const GITHUB_API_URL = "https://api.github.com/repos/" ++ GITHUB_REPO ++ "/releases/latest";
 
