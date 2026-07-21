@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const VERSION = "1.6.0";
+const VERSION = "1.6.1";
 const GITHUB_REPO = "9trocode/OpenFing";
 const GITHUB_API_URL = "https://api.github.com/repos/" ++ GITHUB_REPO ++ "/releases/latest";
 
@@ -93,7 +93,7 @@ pub fn main() !void {
             \\    openfing --update           Check for and install updates
             \\
             \\AUTO-UPDATE:
-            \\    OpenFing checks for updates daily in the background.
+            \\    OpenFing checks for updates once a day at startup (3 second limit).
             \\    Use --no-update to disable this behavior.
             \\
         , .{});
@@ -131,18 +131,18 @@ pub fn main() !void {
         return;
     }
 
-    // Background update check - stores result for display at end
-    var update_available: ?[]const u8 = null;
-    if (!no_update) {
-        update_available = checkForUpdateNotification(allocator);
-    }
-
     // Header
     try stdout.print("\n", .{});
     try stdout.print("+==============================================================================+\n", .{});
     try stdout.print("|                              OpenFing v{s}                                 |\n", .{VERSION});
     try stdout.print("|                         Fast Network Device Scanner                          |\n", .{});
     try stdout.print("+==============================================================================+\n\n", .{});
+
+    // Update check (bounded by curl --max-time) - result shown at end
+    var update_available: ?[]const u8 = null;
+    if (!no_update) {
+        update_available = checkForUpdateNotification(allocator);
+    }
 
     const has_arp_scan = checkArpScan(allocator);
     if (!has_arp_scan and is_root) {
@@ -173,7 +173,7 @@ pub fn main() !void {
 
     if (!is_root) {
         try stdout.print("NOTE: Using multi-method discovery (ping, mDNS, SSDP, TCP probes).\n", .{});
-        try stdout.print("      Run with sudo + arp-scan for potentially faster results.\n\n", .{});
+        try stdout.print("      This can take 1-2 minutes. Run with sudo + arp-scan for faster results.\n\n", .{});
     }
 
     try stdout.print("Scanning", .{});
@@ -203,6 +203,17 @@ pub fn main() !void {
         try stderr.print("No devices found.\n", .{});
         return;
     }
+
+    // Filter proxy-ARP phantoms: some gateways (Comcast xFi, eero, mesh APs)
+    // answer ARP for every IP in the subnet, so one MAC claims hundreds of IPs
+    const phantoms_removed = filterProxyArp(&devices, gateway_ip);
+    if (phantoms_removed > 0) {
+        try stdout.print("Note: your router answers ARP for unused IPs (proxy-ARP).\n", .{});
+        try stdout.print("      Filtered {d} phantom entries that shared the router's MAC.\n\n", .{phantoms_removed});
+    }
+
+    // Drop self-assigned 169.254.x.x entries for devices we also see on a real IP
+    dropLinkLocalDupes(&devices);
 
     // Merge duplicate IPs (same device with multiple network interfaces)
     mergeDevicesByIP(allocator, &devices);
@@ -515,6 +526,10 @@ fn fetchLatestRelease(allocator: std.mem.Allocator) ![]u8 {
         .argv = &[_][]const u8{
             "curl",
             "-s",
+            "--connect-timeout",
+            "2",
+            "--max-time",
+            "3",
             "-H",
             "Accept: application/vnd.github.v3+json",
             "-H",
@@ -536,7 +551,7 @@ fn fetchLatestRelease(allocator: std.mem.Allocator) ![]u8 {
 
 fn downloadBinary(allocator: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
     var cmd_buf: [1024]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, "curl -sL -o \"{s}\" \"{s}\" && chmod +x \"{s}\"", .{ dest_path, url, dest_path }) catch return error.CommandTooLong;
+    const cmd = std.fmt.bufPrint(&cmd_buf, "curl -sL --connect-timeout 5 --max-time 120 -o \"{s}\" \"{s}\" && chmod +x \"{s}\"", .{ dest_path, url, dest_path }) catch return error.CommandTooLong;
 
     const result = std.process.Child.run(.{
         .allocator = allocator,
@@ -607,8 +622,8 @@ fn checkAndUpdate(allocator: std.mem.Allocator, force: bool) UpdateResult {
         return .{ .failed = "Failed to parse tag from GitHub response" };
     };
 
-    // Compare versions
-    if (compareVersions(VERSION, latest_version) >= 0) {
+    // Compare versions (1 = latest is newer than current)
+    if (compareVersions(VERSION, latest_version) <= 0) {
         return .up_to_date;
     }
 
@@ -710,8 +725,8 @@ fn checkForUpdateNotification(allocator: std.mem.Allocator) ?[]const u8 {
         return getCachedUpdateVersion(allocator);
     };
 
-    // Compare versions
-    if (compareVersions(VERSION, latest_version) >= 0) {
+    // Compare versions (1 = latest is newer than current)
+    if (compareVersions(VERSION, latest_version) <= 0) {
         // We're up to date, clear any cached notification
         clearCachedUpdate(allocator);
         return null;
@@ -741,8 +756,8 @@ fn getCachedUpdateVersion(allocator: std.mem.Allocator) ?[]const u8 {
     const version = std.mem.trimRight(u8, buf[0..bytes_read], "\n\r ");
     if (version.len == 0) return null;
 
-    // Verify it's actually newer than current
-    if (compareVersions(VERSION, version) >= 0) {
+    // Verify it's actually newer than current (1 = newer)
+    if (compareVersions(VERSION, version) <= 0) {
         return null;
     }
 
@@ -792,9 +807,10 @@ fn parallelDeepScan(allocator: std.mem.Allocator, devices: *std.ArrayList(Device
     // - All hostname lookups run in parallel
     // - All port scans for all IPs run in parallel (not sequential per IP)
     // This is MUCH faster than nested loops
-    var cmd_buf: [8192]u8 = undefined;
+    // Heap-allocated: a fixed buffer silently truncated on large device lists,
+    // making --deep a no-op on networks with 200+ discovered IPs
     const cmd = switch (os_type) {
-        .macos => std.fmt.bufPrint(&cmd_buf,
+        .macos => std.fmt.allocPrint(allocator,
             \\#!/bin/bash
             \\# Parallel hostname resolution (all at once)
             \\for ip in {s}; do
@@ -808,7 +824,7 @@ fn parallelDeepScan(allocator: std.mem.Allocator, devices: *std.ArrayList(Device
             \\done
             \\wait
         , .{ ip_list.items, ip_list.items }) catch return,
-        .linux => std.fmt.bufPrint(&cmd_buf,
+        .linux => std.fmt.allocPrint(allocator,
             \\#!/bin/bash
             \\# Parallel hostname resolution (all at once)
             \\for ip in {s}; do
@@ -824,6 +840,7 @@ fn parallelDeepScan(allocator: std.mem.Allocator, devices: *std.ArrayList(Device
         , .{ ip_list.items, ip_list.items }) catch return,
         .unknown => return,
     };
+    defer allocator.free(cmd);
 
     const result = std.process.Child.run(.{
         .allocator = allocator,
@@ -955,6 +972,79 @@ fn portNumbersToNames(allocator: std.mem.Allocator, ports: []const u8) ![]const 
     }
 
     return try result.toOwnedSlice();
+}
+
+// A single MAC answering for this many IPs is a proxy-ARP gateway, not real devices
+const PROXY_ARP_THRESHOLD = 5;
+
+fn filterProxyArp(devices: *std.ArrayList(Device), gateway_ip: ?[]const u8) usize {
+    var removed: usize = 0;
+
+    var i: usize = 0;
+    while (i < devices.items.len) {
+        const mac = devices.items[i].mac;
+        if (mac.len == 0 or mac[0] == '?') {
+            i += 1;
+            continue;
+        }
+
+        var claims: usize = 0;
+        for (devices.items) |d| {
+            if (std.mem.eql(u8, d.mac, mac)) claims += 1;
+        }
+        if (claims < PROXY_ARP_THRESHOLD) {
+            i += 1;
+            continue;
+        }
+
+        // Keep the gateway's own row if it carries this MAC, otherwise the first row
+        var keep_ip: []const u8 = devices.items[i].ip;
+        if (gateway_ip) |gip| {
+            for (devices.items) |d| {
+                if (std.mem.eql(u8, d.mac, mac) and std.mem.eql(u8, d.ip, gip)) {
+                    keep_ip = gip;
+                    break;
+                }
+            }
+        }
+
+        var j: usize = 0;
+        while (j < devices.items.len) {
+            if (std.mem.eql(u8, devices.items[j].mac, mac) and !std.mem.eql(u8, devices.items[j].ip, keep_ip)) {
+                _ = devices.orderedRemove(j);
+                removed += 1;
+            } else {
+                j += 1;
+            }
+        }
+
+        // Indices shifted after removal; the filtered MAC now has 1 claim so it
+        // won't retrigger. Rescan from the start.
+        i = 0;
+    }
+
+    return removed;
+}
+
+fn dropLinkLocalDupes(devices: *std.ArrayList(Device)) void {
+    var i: usize = 0;
+    while (i < devices.items.len) {
+        const d = devices.items[i];
+        if (std.mem.startsWith(u8, d.ip, "169.254.") and d.mac.len > 0 and d.mac[0] != '?') {
+            var has_real_ip = false;
+            for (devices.items) |other| {
+                if (!std.mem.startsWith(u8, other.ip, "169.254.") and std.mem.eql(u8, other.mac, d.mac)) {
+                    has_real_ip = true;
+                    break;
+                }
+            }
+            if (has_real_ip) {
+                _ = devices.orderedRemove(i);
+                continue;
+            }
+        }
+        i += 1;
+    }
 }
 
 fn mergeDevicesByIP(allocator: std.mem.Allocator, devices: *std.ArrayList(Device)) void {
@@ -1340,6 +1430,9 @@ fn ssdpDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device), 
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
+    // Parse ARP entries first so responders get their real MAC from the table
+    try parseArpOutput(allocator, devices, result.stdout);
+
     // Parse SSDP responses to extract IPs and any ARP entries
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     while (lines.next()) |line| {
@@ -1375,8 +1468,6 @@ fn ssdpDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device), 
         }
     }
 
-    // Also parse any ARP output at the end
-    try parseArpOutput(allocator, devices, result.stdout);
 }
 
 fn extractIpFromUrl(line: []const u8) ?[]const u8 {
@@ -1401,8 +1492,9 @@ fn extractIpFromUrl(line: []const u8) ?[]const u8 {
 }
 
 fn getMacForIp(allocator: std.mem.Allocator, ip: []const u8) ![]const u8 {
+    // `arp -a <ip>` is invalid on macOS (usage error, empty stdout); -n <ip> works on both OSes
     var cmd_buf: [128]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, "arp -a {s} 2>/dev/null", .{ip}) catch return "??:??:??:??:??:??";
+    const cmd = std.fmt.bufPrint(&cmd_buf, "arp -n {s} 2>/dev/null", .{ip}) catch return "??:??:??:??:??:??";
 
     const result = std.process.Child.run(.{
         .allocator = allocator,
@@ -1469,6 +1561,9 @@ fn netbiosDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
+    // Parse ARP entries first so responders get their real MAC from the table
+    try parseArpOutput(allocator, devices, result.stdout);
+
     // Parse output for IPs
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     while (lines.next()) |line| {
@@ -1498,8 +1593,6 @@ fn netbiosDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device
             }
         }
     }
-
-    try parseArpOutput(allocator, devices, result.stdout);
 }
 
 fn tcpProbeDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device), subnet: ?[]const u8) !void {
@@ -1557,6 +1650,9 @@ fn tcpProbeDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Devic
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
+    // Parse ARP entries first so responders get their real MAC from the table
+    try parseArpOutput(allocator, devices, result.stdout);
+
     // Parse output for IPs that responded
     var lines = std.mem.splitScalar(u8, result.stdout, '\n');
     while (lines.next()) |line| {
@@ -1589,9 +1685,6 @@ fn tcpProbeDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Devic
             }
         }
     }
-
-    // Parse ARP output at the end
-    try parseArpOutput(allocator, devices, result.stdout);
 }
 
 fn readArpCache(allocator: std.mem.Allocator, devices: *std.ArrayList(Device)) !void {
@@ -1999,6 +2092,13 @@ fn lookupVendor(mac: []const u8) []const u8 {
 
     if (j < 6) return "Unknown";
     const prefix = prefix_buf[0..6];
+
+    // Locally-administered bit set (2nd hex digit 2/6/A/E): randomized private
+    // MAC used by modern iOS/Android/Windows - no OUI database can resolve these
+    switch (prefix[1]) {
+        '2', '6', 'A', 'E' => return "Private (randomized MAC)",
+        else => {},
+    }
 
     // VMware
     if (std.mem.eql(u8, prefix, "00163E") or std.mem.eql(u8, prefix, "000C29") or std.mem.eql(u8, prefix, "005056")) return "VMware";
