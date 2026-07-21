@@ -37,7 +37,8 @@ jobs:
             target: x86_64-macos
           - os: macos
             arch: arm64
-            runner: macos-latest
+            # Pinned: zig 0.14.0 fails to link against the newer SDK on macos-latest
+            runner: macos-15
             target: aarch64-macos
 
     steps:
