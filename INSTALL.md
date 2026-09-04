@@ -264,7 +264,7 @@ Install arp-scan using the instructions above, or run with sudo and OpenFing wil
 
 ### Limited results without sudo
 
-This is expected behavior. Without root privileges, OpenFing can only read the ARP cache, which contains recently contacted devices. For a full network scan, run with `sudo`.
+Without root, OpenFing uses ping, mDNS, SSDP, NetBIOS, and TCP probes instead of a privileged ARP scan. Most devices still show up, but MAC addresses may be missing for hosts that never entered the ARP cache. For the union of both (MACs + multicast IoT), run with `sudo`.
 
 ### Build fails with Zig errors
 

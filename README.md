@@ -88,9 +88,9 @@ sudo mv zig-out/bin/openfing /usr/local/bin/
 ## Usage
 
 ```bash
-openfing                      # Quick scan (no sudo needed)
-sudo openfing                 # Full network scan (fast)
-sudo openfing --deep          # Full scan + hostnames + ports (~4 seconds)
+openfing                      # Multi-method discovery (no sudo needed)
+sudo openfing                 # ARP scan + mDNS/SSDP (MACs + IoT)
+sudo openfing --deep          # Full scan + hostnames + ports
 sudo openfing en0             # Scan specific interface
 sudo openfing --install-deps  # Install arp-scan for best results
 openfing --update             # Check for and install updates
@@ -119,7 +119,7 @@ Scanning done
 Deep scanning (hostnames + ports)... done
 
 +-----------------------------------------------------------------------------+
-| DEVICES FOUND: 5 (via arp-scan)
+| DEVICES FOUND: 5 (via arp-scan + multi-method)
 +-----------------------------------------------------------------------------+
 
 IP ADDRESS        | MAC ADDRESS        | VENDOR/HOST                  | PORTS
@@ -190,9 +190,10 @@ sudo pacman -S arp-scan
 ### With sudo (Full Scan)
 
 1. Detects your network interface and subnet
-2. Uses `arp-scan` to send ARP requests to all IPs in the subnet
-3. Collects responses and identifies device vendors via MAC OUI lookup
-4. Optionally resolves hostnames and scans ports (with `--deep`)
+2. Uses `arp-scan` to send ARP requests to all IPs in the subnet (MAC + vendor)
+3. Follows up with mDNS, SSDP, and NetBIOS to catch IoT devices that ignore ARP
+4. Merges both result sets by IP, filling in MACs from the ARP cache when probes wake a device
+5. Optionally resolves hostnames and scans ports (with `--deep`)
 
 ### Without sudo (Multi-Method Discovery)
 
@@ -203,17 +204,17 @@ sudo pacman -S arp-scan
 5. NetBIOS discovery (finds Windows/Samba devices)
 6. Reads the combined ARP cache
 
-This multi-method approach often finds **more devices** than traditional sudo-only scanners!
+Sudo scans now use **both** methods, so you get arp-scan MACs without dropping multicast-only IoT devices.
 
 ## Comparison: With vs Without sudo
 
-| Feature           | Without sudo                | With sudo           |
-| ----------------- | --------------------------- | ------------------- |
-| Scan method       | Multi-method discovery      | Full ARP scan       |
-| Device discovery  | Excellent (multiple probes) | All active devices  |
-| Vendor lookup     | Yes                         | Yes (more accurate) |
-| Speed             | ~5 seconds                  | ~2 seconds          |
-| Requires arp-scan | No                          | Yes (auto-installs) |
+| Feature           | Without sudo                | With sudo                            |
+| ----------------- | --------------------------- | ------------------------------------ |
+| Scan method       | Multi-method discovery      | ARP scan + mDNS/SSDP/NetBIOS         |
+| Device discovery  | Excellent (multiple probes) | Union of ARP-active + multicast IoT  |
+| Vendor lookup     | Yes (when MAC is known)     | Yes (MAC from arp-scan)              |
+| Speed             | ~5–120 seconds              | ~5 seconds                           |
+| Requires arp-scan | No                          | Yes (auto-installs)                  |
 
 ## Supported Platforms
 

@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const VERSION = "1.6.1";
+const VERSION = "1.7.0";
 const GITHUB_REPO = "9trocode/OpenFing";
 const GITHUB_API_URL = "https://api.github.com/repos/" ++ GITHUB_REPO ++ "/releases/latest";
 
@@ -19,6 +19,9 @@ const Device = struct {
     // Additional MACs for devices with multiple network interfaces
     additional_macs: std.ArrayList(MacInfo),
     has_additional_macs: bool,
+    // True when mDNS/SSDP/NetBIOS/TCP independently saw this IP.
+    // Survives proxy-ARP filtering when the gateway answered ARP for it.
+    probe_confirmed: bool,
 };
 
 const OsType = enum { macos, linux, unknown };
@@ -85,8 +88,8 @@ pub fn main() !void {
             \\    --no-update         Disable automatic update checking
             \\
             \\EXAMPLES:
-            \\    openfing                    Quick scan using ARP cache
-            \\    sudo openfing               Full network scan (fast)
+            \\    openfing                    Multi-method discovery (no sudo)
+            \\    sudo openfing               ARP scan + mDNS/SSDP (MACs + IoT)
             \\    sudo openfing --deep        Full scan with port detection (slower)
             \\    sudo openfing en0           Scan specific interface
             \\    sudo openfing --install-deps  Install arp-scan
@@ -174,6 +177,8 @@ pub fn main() !void {
     if (!is_root) {
         try stdout.print("NOTE: Using multi-method discovery (ping, mDNS, SSDP, TCP probes).\n", .{});
         try stdout.print("      This can take 1-2 minutes. Run with sudo + arp-scan for faster results.\n\n", .{});
+    } else if (has_arp_scan) {
+        try stdout.print("NOTE: Combining arp-scan with mDNS/SSDP/NetBIOS for devices that skip ARP.\n\n", .{});
     }
 
     try stdout.print("Scanning", .{});
@@ -186,11 +191,13 @@ pub fn main() !void {
     if (is_root and has_arp_scan) {
         const success = try runArpScan(allocator, &devices, iface);
         if (success) {
-            scan_method = "arp-scan";
+            scan_method = "arp-scan + multi-method";
         } else {
             try pingSweepAndArp(allocator, &devices, subnet, &stdout);
-            scan_method = "ping sweep + ARP";
+            scan_method = "ping sweep + ARP + multi-method";
         }
+        // arp-scan has MACs; multicast probes catch IoT that ignore ARP
+        try supplementalDiscovery(allocator, &devices, subnet, &stdout);
     } else {
         // Non-root: use multi-method discovery for better coverage
         try multiMethodDiscovery(allocator, &devices, subnet, &stdout);
@@ -1011,6 +1018,14 @@ fn filterProxyArp(devices: *std.ArrayList(Device), gateway_ip: ?[]const u8) usiz
         var j: usize = 0;
         while (j < devices.items.len) {
             if (std.mem.eql(u8, devices.items[j].mac, mac) and !std.mem.eql(u8, devices.items[j].ip, keep_ip)) {
+                if (devices.items[j].probe_confirmed) {
+                    // Multicast/TCP proved this IP is a real host; the gateway
+                    // was proxy-ARPing for it. Keep the row, drop the fake MAC.
+                    devices.items[j].mac = "??:??:??:??:??:??";
+                    devices.items[j].vendor = "Unknown";
+                    j += 1;
+                    continue;
+                }
                 _ = devices.orderedRemove(j);
                 removed += 1;
             } else {
@@ -1287,6 +1302,7 @@ fn runArpScan(allocator: std.mem.Allocator, devices: *std.ArrayList(Device), ifa
             .open_ports = "",
             .additional_macs = std.ArrayList(MacInfo).init(allocator),
             .has_additional_macs = false,
+            .probe_confirmed = false,
         });
     }
 
@@ -1354,6 +1370,47 @@ fn pingSweepAndArp(allocator: std.mem.Allocator, devices: *std.ArrayList(Device)
 // Multi-Method Discovery (for non-root scanning)
 // ============================================================================
 
+fn isUnknownMac(mac: []const u8) bool {
+    return mac.len == 0 or mac[0] == '?';
+}
+
+fn markProbeConfirmed(devices: *std.ArrayList(Device), ip: []const u8) bool {
+    for (devices.items) |*d| {
+        if (std.mem.eql(u8, d.ip, ip)) {
+            d.probe_confirmed = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+/// mDNS, SSDP, and NetBIOS — the probes that find devices arp-scan misses.
+/// Skips the L2 ping sweep and full TCP probe (redundant after arp-scan).
+fn supplementalDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device), subnet: ?[]const u8, stdout: anytype) !void {
+    try stdout.print(".", .{});
+    try mdnsDiscovery(allocator, devices);
+
+    try stdout.print(".", .{});
+    try ssdpDiscovery(allocator, devices, subnet);
+
+    try stdout.print(".", .{});
+    try netbiosDiscovery(allocator, devices, subnet);
+
+    try stdout.print(".", .{});
+    try readArpCache(allocator, devices);
+    fillUnknownMacs(allocator, devices);
+}
+
+fn fillUnknownMacs(allocator: std.mem.Allocator, devices: *std.ArrayList(Device)) void {
+    for (devices.items) |*device| {
+        if (!isUnknownMac(device.mac)) continue;
+        const mac = getMacForIp(allocator, device.ip) catch continue;
+        if (isUnknownMac(mac)) continue;
+        device.mac = mac;
+        device.vendor = lookupVendor(mac);
+    }
+}
+
 fn multiMethodDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device), subnet: ?[]const u8, stdout: anytype) !void {
     try stdout.print(".", .{});
 
@@ -1362,23 +1419,14 @@ fn multiMethodDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(De
 
     try stdout.print(".", .{});
 
-    // Method 2: mDNS/Bonjour discovery (finds Apple devices, printers, Chromecasts, etc.)
-    try mdnsDiscovery(allocator, devices);
-
-    try stdout.print(".", .{});
-
-    // Method 3: SSDP/UPnP discovery (finds routers, smart TVs, gaming consoles, etc.)
-    try ssdpDiscovery(allocator, devices, subnet);
-
-    try stdout.print(".", .{});
-
-    // Method 4: NetBIOS discovery (finds Windows/Samba devices)
-    try netbiosDiscovery(allocator, devices, subnet);
+    // Methods 2-4: mDNS, SSDP, NetBIOS (also used after sudo arp-scan)
+    try supplementalDiscovery(allocator, devices, subnet, stdout);
 
     try stdout.print(".", .{});
 
     // Method 5: TCP port probe on common ports for remaining IPs
     try tcpProbeDiscovery(allocator, devices, subnet);
+    fillUnknownMacs(allocator, devices);
 }
 
 fn mdnsDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device)) !void {
@@ -1440,30 +1488,22 @@ fn ssdpDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device), 
         if (std.mem.indexOf(u8, line, "LOCATION:") != null or std.mem.indexOf(u8, line, "location:") != null) {
             // Extract IP from URL
             if (extractIpFromUrl(line)) |ip| {
-                // Check if already in devices
-                var found = false;
-                for (devices.items) |d| {
-                    if (std.mem.eql(u8, d.ip, ip)) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    // Try to get MAC from ARP
-                    const mac = getMacForIp(allocator, ip) catch "??:??:??:??:??:??";
-                    const ip_copy = try allocator.dupe(u8, ip);
-                    const mac_copy = try allocator.dupe(u8, mac);
+                if (markProbeConfirmed(devices, ip)) continue;
+                // Try to get MAC from ARP
+                const mac = getMacForIp(allocator, ip) catch "??:??:??:??:??:??";
+                const ip_copy = try allocator.dupe(u8, ip);
+                const mac_copy = try allocator.dupe(u8, mac);
 
-                    try devices.append(.{
-                        .ip = ip_copy,
-                        .mac = mac_copy,
-                        .vendor = if (mac.len >= 8) lookupVendor(mac) else "UPnP Device",
-                        .hostname = "?",
-                        .open_ports = "",
-                        .additional_macs = std.ArrayList(MacInfo).init(allocator),
-                        .has_additional_macs = false,
-                    });
-                }
+                try devices.append(.{
+                    .ip = ip_copy,
+                    .mac = mac_copy,
+                    .vendor = if (mac.len >= 8) lookupVendor(mac) else "UPnP Device",
+                    .hostname = "?",
+                    .open_ports = "",
+                    .additional_macs = std.ArrayList(MacInfo).init(allocator),
+                    .has_additional_macs = false,
+                    .probe_confirmed = true,
+                });
             }
         }
     }
@@ -1569,28 +1609,21 @@ fn netbiosDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Device
     while (lines.next()) |line| {
         if (isValidIP(std.mem.trim(u8, line, " \t\r\n"))) {
             const ip = std.mem.trim(u8, line, " \t\r\n");
-            var found = false;
-            for (devices.items) |d| {
-                if (std.mem.eql(u8, d.ip, ip)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                const mac = getMacForIp(allocator, ip) catch "??:??:??:??:??:??";
-                const ip_copy = try allocator.dupe(u8, ip);
-                const mac_copy = try allocator.dupe(u8, mac);
+            if (markProbeConfirmed(devices, ip)) continue;
+            const mac = getMacForIp(allocator, ip) catch "??:??:??:??:??:??";
+            const ip_copy = try allocator.dupe(u8, ip);
+            const mac_copy = try allocator.dupe(u8, mac);
 
-                try devices.append(.{
-                    .ip = ip_copy,
-                    .mac = mac_copy,
-                    .vendor = if (mac.len >= 8 and !std.mem.eql(u8, mac, "??:??:??:??:??:??")) lookupVendor(mac) else "Windows/Samba",
-                    .hostname = "?",
-                    .open_ports = "",
-                    .additional_macs = std.ArrayList(MacInfo).init(allocator),
-                    .has_additional_macs = false,
-                });
-            }
+            try devices.append(.{
+                .ip = ip_copy,
+                .mac = mac_copy,
+                .vendor = if (mac.len >= 8 and !std.mem.eql(u8, mac, "??:??:??:??:??:??")) lookupVendor(mac) else "Windows/Samba",
+                .hostname = "?",
+                .open_ports = "",
+                .additional_macs = std.ArrayList(MacInfo).init(allocator),
+                .has_additional_macs = false,
+                .probe_confirmed = true,
+            });
         }
     }
 }
@@ -1660,28 +1693,21 @@ fn tcpProbeDiscovery(allocator: std.mem.Allocator, devices: *std.ArrayList(Devic
         if (std.mem.indexOf(u8, line, ":")) |colon_idx| {
             const ip = line[0..colon_idx];
             if (isValidIP(ip)) {
-                var found = false;
-                for (devices.items) |d| {
-                    if (std.mem.eql(u8, d.ip, ip)) {
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    const mac = getMacForIp(allocator, ip) catch "??:??:??:??:??:??";
-                    const ip_copy = try allocator.dupe(u8, ip);
-                    const mac_copy = try allocator.dupe(u8, mac);
+                if (markProbeConfirmed(devices, ip)) continue;
+                const mac = getMacForIp(allocator, ip) catch "??:??:??:??:??:??";
+                const ip_copy = try allocator.dupe(u8, ip);
+                const mac_copy = try allocator.dupe(u8, mac);
 
-                    try devices.append(.{
-                        .ip = ip_copy,
-                        .mac = mac_copy,
-                        .vendor = if (mac.len >= 8 and !std.mem.eql(u8, mac, "??:??:??:??:??:??")) lookupVendor(mac) else "Unknown",
-                        .hostname = "?",
-                        .open_ports = "",
-                        .additional_macs = std.ArrayList(MacInfo).init(allocator),
-                        .has_additional_macs = false,
-                    });
-                }
+                try devices.append(.{
+                    .ip = ip_copy,
+                    .mac = mac_copy,
+                    .vendor = if (mac.len >= 8 and !std.mem.eql(u8, mac, "??:??:??:??:??:??")) lookupVendor(mac) else "Unknown",
+                    .hostname = "?",
+                    .open_ports = "",
+                    .additional_macs = std.ArrayList(MacInfo).init(allocator),
+                    .has_additional_macs = false,
+                    .probe_confirmed = true,
+                });
             }
         }
     }
@@ -1739,15 +1765,23 @@ fn parseArpOutput(allocator: std.mem.Allocator, devices: *std.ArrayList(Device),
         if (std.mem.eql(u8, mac, "ff:ff:ff:ff:ff:ff")) continue;
         if (std.mem.startsWith(u8, mac, "01:")) continue;
 
-        // Check for duplicates
-        var is_dup = false;
-        for (devices.items) |d| {
+        // Duplicate IP: keep the existing row, but upgrade a placeholder MAC
+        var existing_idx: ?usize = null;
+        for (devices.items, 0..) |d, idx| {
             if (std.mem.eql(u8, d.ip, ip)) {
-                is_dup = true;
+                existing_idx = idx;
                 break;
             }
         }
-        if (is_dup) continue;
+        if (existing_idx) |idx| {
+            if (isUnknownMac(devices.items[idx].mac) and !isUnknownMac(mac)) {
+                var upgrade_buf: [17]u8 = undefined;
+                const normalized_upgrade = if (mac.len == 17) normalizeMac(mac, &upgrade_buf) else mac;
+                devices.items[idx].mac = allocator.dupe(u8, normalized_upgrade) catch devices.items[idx].mac;
+                devices.items[idx].vendor = lookupVendor(normalized_upgrade);
+            }
+            continue;
+        }
 
         // Normalize MAC
         var mac_buf: [17]u8 = undefined;
@@ -1765,6 +1799,7 @@ fn parseArpOutput(allocator: std.mem.Allocator, devices: *std.ArrayList(Device),
             .open_ports = "",
             .additional_macs = std.ArrayList(MacInfo).init(allocator),
             .has_additional_macs = false,
+            .probe_confirmed = false,
         });
     }
 }
@@ -2201,4 +2236,139 @@ fn lookupVendor(mac: []const u8) []const u8 {
     if (std.mem.eql(u8, prefix, "B0416F")) return "Shenzhen Maxtang";
 
     return "Unknown";
+}
+
+fn emptyMacList(allocator: std.mem.Allocator) std.ArrayList(MacInfo) {
+    return std.ArrayList(MacInfo).init(allocator);
+}
+
+test "isUnknownMac detects placeholders" {
+    try std.testing.expect(isUnknownMac(""));
+    try std.testing.expect(isUnknownMac("?"));
+    try std.testing.expect(isUnknownMac("??:??:??:??:??:??"));
+    try std.testing.expect(!isUnknownMac("AA:BB:CC:DD:EE:FF"));
+    try std.testing.expect(!isUnknownMac("a4:c3:f0:12:34:56"));
+}
+
+test "parseArpOutput adds a new device" {
+    const allocator = std.testing.allocator;
+    var devices = std.ArrayList(Device).init(allocator);
+    defer {
+        for (devices.items) |d| {
+            allocator.free(d.ip);
+            allocator.free(d.mac);
+            d.additional_macs.deinit();
+        }
+        devices.deinit();
+    }
+
+    const arp = "? (10.0.0.5) at a4:c3:f0:12:34:56 on en0 ifscope [ethernet]\n";
+    try parseArpOutput(allocator, &devices, arp);
+
+    try std.testing.expectEqual(@as(usize, 1), devices.items.len);
+    try std.testing.expectEqualStrings("10.0.0.5", devices.items[0].ip);
+    try std.testing.expectEqualStrings("A4:C3:F0:12:34:56", devices.items[0].mac);
+}
+
+test "parseArpOutput skips duplicate IP that already has a MAC" {
+    const allocator = std.testing.allocator;
+    var devices = std.ArrayList(Device).init(allocator);
+    defer {
+        for (devices.items) |d| {
+            allocator.free(d.ip);
+            allocator.free(d.mac);
+            d.additional_macs.deinit();
+        }
+        devices.deinit();
+    }
+
+    try devices.append(.{
+        .ip = try allocator.dupe(u8, "192.168.1.50"),
+        .mac = try allocator.dupe(u8, "AA:BB:CC:DD:EE:FF"),
+        .vendor = "Test",
+        .hostname = "?",
+        .open_ports = "",
+        .additional_macs = emptyMacList(allocator),
+        .has_additional_macs = false,
+        .probe_confirmed = false,
+    });
+
+    const arp = "? (192.168.1.50) at 11:22:33:44:55:66 on en0 ifscope [ethernet]\n";
+    try parseArpOutput(allocator, &devices, arp);
+
+    try std.testing.expectEqual(@as(usize, 1), devices.items.len);
+    try std.testing.expectEqualStrings("AA:BB:CC:DD:EE:FF", devices.items[0].mac);
+}
+
+test "parseArpOutput upgrades placeholder MAC for an existing IP" {
+    const allocator = std.testing.allocator;
+    var devices = std.ArrayList(Device).init(allocator);
+    defer {
+        for (devices.items) |d| {
+            allocator.free(d.ip);
+            allocator.free(d.mac);
+            d.additional_macs.deinit();
+        }
+        devices.deinit();
+    }
+
+    const placeholder = try allocator.dupe(u8, "??:??:??:??:??:??");
+    try devices.append(.{
+        .ip = try allocator.dupe(u8, "192.168.1.50"),
+        .mac = placeholder,
+        .vendor = "UPnP Device",
+        .hostname = "?",
+        .open_ports = "",
+        .additional_macs = emptyMacList(allocator),
+        .has_additional_macs = false,
+        .probe_confirmed = true,
+    });
+
+    const arp = "? (192.168.1.50) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]\n";
+    try parseArpOutput(allocator, &devices, arp);
+
+    try std.testing.expectEqual(@as(usize, 1), devices.items.len);
+    try std.testing.expectEqualStrings("AA:BB:CC:DD:EE:FF", devices.items[0].mac);
+    if (devices.items[0].mac.ptr != placeholder.ptr) {
+        allocator.free(placeholder);
+    }
+}
+
+test "filterProxyArp keeps multicast-confirmed IoT that shares the gateway MAC" {
+    const allocator = std.heap.page_allocator;
+    var devices = std.ArrayList(Device).init(allocator);
+    defer devices.deinit();
+
+    const gw_mac = "E8:EA:4D:1D:3A:45";
+    const ips = [_][]const u8{ "192.168.8.254", "192.168.8.10", "192.168.8.11", "192.168.8.12", "192.168.8.13", "192.168.8.40" };
+    for (ips, 0..) |ip, n| {
+        try devices.append(.{
+            .ip = ip,
+            .mac = gw_mac,
+            .vendor = "Huawei",
+            .hostname = "?",
+            .open_ports = "",
+            .additional_macs = emptyMacList(allocator),
+            .has_additional_macs = false,
+            .probe_confirmed = n == ips.len - 1,
+        });
+    }
+
+    const removed = filterProxyArp(&devices, "192.168.8.254");
+    try std.testing.expectEqual(@as(usize, 4), removed);
+    try std.testing.expectEqual(@as(usize, 2), devices.items.len);
+
+    var saw_gateway = false;
+    var saw_iot = false;
+    for (devices.items) |d| {
+        if (std.mem.eql(u8, d.ip, "192.168.8.254")) {
+            saw_gateway = true;
+            try std.testing.expectEqualStrings(gw_mac, d.mac);
+        } else if (std.mem.eql(u8, d.ip, "192.168.8.40")) {
+            saw_iot = true;
+            try std.testing.expect(isUnknownMac(d.mac));
+        }
+    }
+    try std.testing.expect(saw_gateway);
+    try std.testing.expect(saw_iot);
 }
